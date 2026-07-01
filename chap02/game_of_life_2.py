@@ -221,6 +221,12 @@ def is_close_family(a, b):
     return False
 
 
+def is_sibling(a, b):
+    a_parents = set(a["parent_ids"])
+    b_parents = set(b["parent_ids"])
+    return bool(a_parents and b_parents and a_parents == b_parents)
+
+
 def is_mate(a, b):
     return b["id"] in a["mate_ids"] or a["id"] in b["mate_ids"]
 
@@ -610,6 +616,22 @@ def remove_body_cells(owner, individual, count):
         individual["energy"] -= NEW_CELL_ENERGY
 
 
+def grow_from_predation(owner, individual, prey_cell_count):
+    growth_count = prey_cell_count
+    for _ in range(growth_count):
+        cells = cells_of(owner, individual["id"])
+        if len(cells) >= max_cells_for(individual):
+            return
+        y, x = random.choice(cells)
+        new_cell = find_empty_near(owner, y, x, radius=1)
+        if new_cell is None:
+            new_cell = find_empty_near(owner, y, x, radius=2)
+        if new_cell is None:
+            return
+        ny, nx = new_cell
+        owner[ny, nx] = individual["id"]
+
+
 def set_pair_state(a, b, status, timer, reason, seconds):
     owner_id = min(a["id"], b["id"])
     state_until = time.monotonic() + seconds
@@ -685,13 +707,17 @@ def resolve_fight(owner, individuals, a, b):
     if loser["genes"]["trait"] == "spikes":
         winner["energy"] -= 16.0
 
-    if loser["energy"] <= 0:
-        winner["kills"] += 1
-        prey_cells = len(cells_of(owner, loser["id"]))
-        gained_energy = prey_cells * MEAT_ENERGY_PER_CELL * winner["genes"]["predation"]
-        winner["energy"] += gained_energy
-        owner[owner == loser["id"]] = -1
-        print("eat: %s consumed %s energy=%.1f" % (winner["name"], loser["name"], gained_energy))
+    winner["kills"] += 1
+    prey_cells = len(cells_of(owner, loser["id"]))
+    gained_energy = prey_cells * MEAT_ENERGY_PER_CELL * winner["genes"]["predation"]
+    winner["energy"] += gained_energy
+    loser["energy"] = 0
+    owner[owner == loser["id"]] = -1
+    before_cells = len(cells_of(owner, winner["id"]))
+    grow_from_predation(owner, winner, prey_cells)
+    grown_cells = len(cells_of(owner, winner["id"])) - before_cells
+    print("eat: %s consumed %s energy=%.1f growth=%d" % (
+        winner["name"], loser["name"], gained_energy, grown_cells))
     print("fight_end: %s beat %s" % (winner["name"], loser["name"]))
 
 
@@ -809,7 +835,8 @@ def try_start_general_fight(owner, individuals, individual):
     candidates = [individuals[other_id] for other_id in nearby_individual_ids(owner, individual["id"], radius=1) if other_id in individuals]
     candidates = [
         candidate for candidate in candidates
-        if candidate["status"] == "normal" and candidate["sex"] == individual["sex"] and
+        if candidate["status"] == "normal" and
+        (candidate["sex"] == individual["sex"] or (age_phase(individual) == "prime" and age_phase(candidate) == "child")) and
         not is_close_family(individual, candidate) and not is_mate(individual, candidate)
     ]
     if not candidates:
@@ -819,6 +846,9 @@ def try_start_general_fight(owner, individuals, individual):
     predation_drive = individual["genes"]["predation"] * individual["hunger"] * (1.0 + prey_weakness)
     attack_drive = (individual["genes"]["aggression"] + predation_drive) * strongest_score(owner, individual)
     restraint = target["genes"]["defense"] * target["genes"]["armor"] * 0.65
+    if age_phase(individual) == "prime" and age_phase(target) == "child":
+        attack_drive *= 1.45
+        restraint *= 0.45
     if attack_drive > restraint:
         return start_fight(individuals, individual, target, "territory")
     return False
@@ -833,6 +863,8 @@ def try_start_mating(owner, individuals, individual):
         return False
     male = males[0]
     if male["energy"] < REPRODUCTION_MIN_ENERGY:
+        return False
+    if is_sibling(individual, male) and random.random() >= 0.30:
         return False
     set_pair_state(individual, male, "mating", MATING_STEPS, "reproduction", MATING_SECONDS)
     print("mating_start: %s x %s" % (individual["name"], male["name"]))
