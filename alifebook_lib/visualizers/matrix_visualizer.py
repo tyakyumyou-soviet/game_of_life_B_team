@@ -11,6 +11,8 @@ class MatrixVisualizer(object):
         self._canvas = app.Canvas(size=(width, height), position=(0,0), keys='interactive', title="ALife book "+self.__class__.__name__)
         self._canvas.events.draw.connect(self._on_draw)
         self._canvas.events.resize.connect(self._on_resize)
+        self._canvas.events.close.connect(self._on_close)
+        self._closed = False
         vertex_shader = open(path.join(GLSL_PATH, 'matrix_visualizer_vertex.glsl'), 'r').read()
         fragment_shader = open(path.join(GLSL_PATH, 'matrix_visualizer_fragment.glsl'), 'r').read()
         self._render_program = gloo.Program(vertex_shader, fragment_shader)
@@ -27,16 +29,31 @@ class MatrixVisualizer(object):
         gloo.clear()
         self._render_program.draw(gloo.gl.GL_TRIANGLE_STRIP)
 
+    def _on_close(self, event):
+        self._closed = True
+        app.quit()
+
     def update(self, matrix):
+        if self._closed:
+            return False
         matrix[matrix < self.value_range[0]] = self.value_range[0]
         matrix[matrix > self.value_range[1]] = self.value_range[1]
         img = ((matrix.astype(np.float64) - self.value_range[0]) / (self.value_range[1] - self.value_range[0]) * 255).astype(np.uint8)
         self._render_program['u_texture'] = img
         self._canvas.update()
         app.process_events()
+        if self._canvas._closed:
+            self._closed = True
+        return not self._closed
+
+    def close(self):
+        self._closed = True
+        if not self._canvas._closed:
+            self._canvas.close()
+        app.quit()
 
     def __bool__(self):
-        return not self._canvas._closed
+        return not self._closed and not self._canvas._closed
 
 if __name__ == '__main__':
     v = MatrixVisualizer(600, 600)
